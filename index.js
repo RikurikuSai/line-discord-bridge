@@ -8,6 +8,8 @@ const config = {
     // Discord設定
     DISCORD_TOKEN: process.env.DISCORD_TOKEN,
     DISCORD_CHANNEL_ID: process.env.DISCORD_CHANNEL_ID,
+    // 追加の転送先チャンネルID（カンマ区切りで複数指定可能）
+    DISCORD_FORWARD_CHANNEL_IDS: (process.env.DISCORD_FORWARD_CHANNEL_IDS || '').split(',').filter(id => id),
     
     // LINE設定
     LINE_CHANNEL_ACCESS_TOKEN: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -35,12 +37,6 @@ const lineClient = new line.Client({
 let messageQueue = [];
 let isProcessing = false;
 
-// メンションを削除する関数
-function cleanMessage(message) {
-    // メンションパターンを削除（<@123456789>形式）
-    return message.replace(/<@!?\d+>/g, '').trim();
-}
-
 // キューを処理する関数
 async function processMessageQueue() {
     if (isProcessing || messageQueue.length === 0) return;
@@ -63,24 +59,37 @@ async function processMessageQueue() {
     }
 }
 
+// Discordの他チャンネルにメッセージを転送する関数
+async function forwardToDiscordChannels(content, files = []) {
+    for (const channelId of config.DISCORD_FORWARD_CHANNEL_IDS) {
+        try {
+            const channel = await discord.channels.fetch(channelId);
+            await channel.send({
+                content: content,
+                files: files
+            });
+        } catch (error) {
+            console.error(`Error forwarding to channel ${channelId}:`, error);
+        }
+    }
+}
+
 // Discordメッセージの処理
 discord.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (message.channelId !== config.DISCORD_CHANNEL_ID) return;
 
     try {
-        // テキストメッセージの処理（メンションを除去）
+        // LINE向けのメッセージ処理
         if (message.content) {
-            const cleanedContent = cleanMessage(message.content);
-            if (cleanedContent) { // 空文字列でない場合のみ送信
-                messageQueue.push({
-                    type: 'text',
-                    text: cleanedContent
-                });
-            }
+            messageQueue.push({
+                type: 'text',
+                text: message.content
+            });
         }
 
         // 画像の処理
+        const files = [];
         if (message.attachments.size > 0) {
             for (const [_, attachment] of message.attachments) {
                 if (attachment.contentType?.startsWith('image/')) {
@@ -89,16 +98,20 @@ discord.on('messageCreate', async message => {
                         originalContentUrl: attachment.url,
                         previewImageUrl: attachment.url
                     });
+                    files.push(attachment.url);
                 }
             }
         }
 
-        // キューの処理を開始
+        // Discordの他チャンネルへ転送
+        await forwardToDiscordChannels(message.content, files.map(url => ({ attachment: url })));
+
+        // LINEメッセージキューの処理を開始
         if (!isProcessing) {
             processMessageQueue();
         }
     } catch (error) {
-        console.error('Error sending message to Discord:', error);
+        console.error('Error processing Discord message:', error);
     }
 });
 
@@ -112,20 +125,27 @@ app.post('/webhook', line.middleware({
             if (event.type !== 'message') return;
 
             const channel = await discord.channels.fetch(config.DISCORD_CHANNEL_ID);
+            let content, files;
             
             switch (event.message.type) {
                 case 'text':
-                    return channel.send(event.message.text);
+                    content = event.message.text;
+                    break;
                     
                 case 'image':
                     const stream = await lineClient.getMessageContent(event.message.id);
-                    return channel.send({
-                        files: [{
-                            attachment: stream,
-                            name: `image-${Date.now()}.jpg`
-                        }]
-                    });
+                    files = [{
+                        attachment: stream,
+                        name: `image-${Date.now()}.jpg`
+                    }];
+                    break;
             }
+
+            // メインチャンネルに送信
+            await channel.send({ content, files });
+
+            // 他のチャンネルに転送
+            await forwardToDiscordChannels(content, files);
         });
 
         await Promise.all(messagePromises);
