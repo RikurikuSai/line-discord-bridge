@@ -37,13 +37,39 @@ discord.on('messageCreate', async message => {
     if (message.channelId !== config.DISCORD_CHANNEL_ID) return;
 
     try {
-        // LINEにメッセージを送信
-        await lineClient.broadcast({
-            type: 'text',
-            text: `${message.author.username}: ${message.content}`
-        });
+        let messages = [];
+        
+        // テキストメッセージの作成
+        if (message.content) {
+            messages.push({
+                type: 'text',
+                text: message.content // ユーザー名を含めない
+            });
+        }
+
+        // 画像の処理
+        if (message.attachments.size > 0) {
+            for (const [_, attachment] of message.attachments) {
+                if (attachment.contentType?.startsWith('image/')) {
+                    messages.push({
+                        type: 'image',
+                        originalContentUrl: attachment.url,
+                        previewImageUrl: attachment.url
+                    });
+                }
+            }
+        }
+
+        // メッセージを送信
+        if (messages.length > 0) {
+            if (messages.length === 1) {
+                await lineClient.broadcast(messages[0]);
+            } else {
+                await lineClient.broadcast({ messages: messages });
+            }
+        }
     } catch (error) {
-        console.error('Error sending message to LINE:', error);
+        console.error('Error sending message to Discord:', error);
     }
 });
 
@@ -54,10 +80,26 @@ app.post('/webhook', line.middleware({
     try {
         const events = req.body.events;
         for (const event of events) {
-            if (event.type !== 'message' || event.message.type !== 'text') continue;
+            if (event.type !== 'message') continue;
 
             const channel = await discord.channels.fetch(config.DISCORD_CHANNEL_ID);
-            await channel.send(`${event.source.userId}: ${event.message.text}`);
+            
+            switch (event.message.type) {
+                case 'text':
+                    await channel.send(event.message.text); // ユーザーIDを含めない
+                    break;
+                    
+                case 'image':
+                    // 画像のバイナリを取得
+                    const stream = await lineClient.getMessageContent(event.message.id);
+                    await channel.send({
+                        files: [{
+                            attachment: stream,
+                            name: 'image.jpg'
+                        }]
+                    });
+                    break;
+            }
         }
         res.status(200).end();
     } catch (error) {
