@@ -35,6 +35,12 @@ const lineClient = new line.Client({
 let messageQueue = [];
 let isProcessing = false;
 
+// メンションを削除する関数
+function cleanMessage(message) {
+    // メンションパターンを削除（<@123456789>形式）
+    return message.replace(/<@!?\d+>/g, '').trim();
+}
+
 // キューを処理する関数
 async function processMessageQueue() {
     if (isProcessing || messageQueue.length === 0) return;
@@ -63,12 +69,15 @@ discord.on('messageCreate', async message => {
     if (message.channelId !== config.DISCORD_CHANNEL_ID) return;
 
     try {
-        // テキストメッセージのみを送信（メンション等を除去）
+        // テキストメッセージの処理（メンションを除去）
         if (message.content) {
-            messageQueue.push({
-                type: 'text',
-                text: message.content
-            });
+            const cleanedContent = cleanMessage(message.content);
+            if (cleanedContent) { // 空文字列でない場合のみ送信
+                messageQueue.push({
+                    type: 'text',
+                    text: cleanedContent
+                });
+            }
         }
 
         // 画像の処理
