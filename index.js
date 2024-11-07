@@ -31,19 +31,44 @@ const lineClient = new line.Client({
     channelSecret: config.LINE_CHANNEL_SECRET
 });
 
+// メッセージキューを管理する配列
+let messageQueue = [];
+let isProcessing = false;
+
+// キューを処理する関数
+async function processMessageQueue() {
+    if (isProcessing || messageQueue.length === 0) return;
+    
+    isProcessing = true;
+    
+    try {
+        const message = messageQueue[0];
+        await lineClient.broadcast(message);
+        await new Promise(resolve => setTimeout(resolve, 200)); // 少し待機
+    } catch (error) {
+        console.error('Error sending message:', error);
+    }
+    
+    messageQueue.shift(); // 処理済みメッセージを削除
+    isProcessing = false;
+    
+    // キューに残りがあれば続けて処理
+    if (messageQueue.length > 0) {
+        processMessageQueue();
+    }
+}
+
 // Discordメッセージの処理
 discord.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (message.channelId !== config.DISCORD_CHANNEL_ID) return;
 
     try {
-        let messages = [];
-        
-        // テキストメッセージの作成
+        // テキストメッセージの送信
         if (message.content) {
-            messages.push({
+            messageQueue.push({
                 type: 'text',
-                text: message.content // ユーザー名を含めない
+                text: message.content
             });
         }
 
@@ -51,7 +76,7 @@ discord.on('messageCreate', async message => {
         if (message.attachments.size > 0) {
             for (const [_, attachment] of message.attachments) {
                 if (attachment.contentType?.startsWith('image/')) {
-                    messages.push({
+                    messageQueue.push({
                         type: 'image',
                         originalContentUrl: attachment.url,
                         previewImageUrl: attachment.url
@@ -60,13 +85,9 @@ discord.on('messageCreate', async message => {
             }
         }
 
-        // メッセージを送信
-        if (messages.length > 0) {
-            if (messages.length === 1) {
-                await lineClient.broadcast(messages[0]);
-            } else {
-                await lineClient.broadcast({ messages: messages });
-            }
+        // キューの処理を開始
+        if (!isProcessing) {
+            processMessageQueue();
         }
     } catch (error) {
         console.error('Error sending message to Discord:', error);
@@ -79,28 +100,29 @@ app.post('/webhook', line.middleware({
 }), async (req, res) => {
     try {
         const events = req.body.events;
-        for (const event of events) {
-            if (event.type !== 'message') continue;
+        // イベントを順番に処理するための配列を作成
+        const messagePromises = events.map(async (event) => {
+            if (event.type !== 'message') return;
 
             const channel = await discord.channels.fetch(config.DISCORD_CHANNEL_ID);
             
             switch (event.message.type) {
                 case 'text':
-                    await channel.send(event.message.text); // ユーザーIDを含めない
-                    break;
+                    return channel.send(event.message.text);
                     
                 case 'image':
-                    // 画像のバイナリを取得
                     const stream = await lineClient.getMessageContent(event.message.id);
-                    await channel.send({
+                    return channel.send({
                         files: [{
                             attachment: stream,
-                            name: 'image.jpg'
+                            name: `image-${Date.now()}.jpg`
                         }]
                     });
-                    break;
             }
-        }
+        });
+
+        // 全てのメッセージを順番に処理
+        await Promise.all(messagePromises);
         res.status(200).end();
     } catch (error) {
         console.error('Error processing LINE webhook:', error);
