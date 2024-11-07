@@ -44,15 +44,14 @@ async function processMessageQueue() {
     try {
         const message = messageQueue[0];
         await lineClient.broadcast(message);
-        await new Promise(resolve => setTimeout(resolve, 200)); // 少し待機
+        await new Promise(resolve => setTimeout(resolve, 200));
     } catch (error) {
         console.error('Error sending message:', error);
     }
     
-    messageQueue.shift(); // 処理済みメッセージを削除
+    messageQueue.shift();
     isProcessing = false;
     
-    // キューに残りがあれば続けて処理
     if (messageQueue.length > 0) {
         processMessageQueue();
     }
@@ -64,7 +63,7 @@ discord.on('messageCreate', async message => {
     if (message.channelId !== config.DISCORD_CHANNEL_ID) return;
 
     try {
-        // テキストメッセージの送信
+        // テキストメッセージのみを送信（メンション等を除去）
         if (message.content) {
             messageQueue.push({
                 type: 'text',
@@ -100,7 +99,6 @@ app.post('/webhook', line.middleware({
 }), async (req, res) => {
     try {
         const events = req.body.events;
-        // イベントを順番に処理するための配列を作成
         const messagePromises = events.map(async (event) => {
             if (event.type !== 'message') return;
 
@@ -121,7 +119,6 @@ app.post('/webhook', line.middleware({
             }
         });
 
-        // 全てのメッセージを順番に処理
         await Promise.all(messagePromises);
         res.status(200).end();
     } catch (error) {
